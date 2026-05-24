@@ -2,7 +2,10 @@ package com.example.ringerguard;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.app.NotificationManager;
 import android.media.AudioManager;
+import android.os.Build;
+import android.provider.Settings;
 
 public final class AudioGuard {
 
@@ -65,7 +68,31 @@ public final class AudioGuard {
 
             if (mode == AudioManager.RINGER_MODE_SILENT
                     || mode == AudioManager.RINGER_MODE_VIBRATE) {
+
+                /*
+                 * Android 7+ 某些系统（尤其 iQOO / vivo / OriginOS）
+                 * 修改静音模式时要求勿扰访问权限。
+                 */
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    NotificationManager nm =
+                            (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+
+                    if (nm != null && !nm.isNotificationPolicyAccessGranted()) {
+                        return false;
+                    }
+                }
+
                 am.setRingerMode(AudioManager.RINGER_MODE_NORMAL);
+
+                // 某些机型切回 NORMAL 后铃声音量会临时变 0
+                if (am.getStreamVolume(AudioManager.STREAM_RING) == 0) {
+                    am.adjustStreamVolume(
+                            AudioManager.STREAM_RING,
+                            AudioManager.ADJUST_RAISE,
+                            AudioManager.FLAG_REMOVE_SOUND_AND_VIBRATE
+                    );
+                }
+
                 return true;
             }
 
