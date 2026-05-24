@@ -197,7 +197,6 @@ public class GuardService extends Service {
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setShowWhen(false)
-                .setSilent(true)
                 .setLocalOnly(true)
                 .setVisibility(Notification.VISIBILITY_SECRET)
                 .setCategory(Notification.CATEGORY_SERVICE)
