@@ -9,25 +9,59 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.database.ContentObserver;
 import android.media.AudioManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.provider.Settings;
 
 public class GuardService extends Service {
 
     private static final String CHANNEL_ID = "ringer_guard_channel";
     private static final int NOTIFICATION_ID = 1001;
 
+    /**
+     * 部分系统会发送这个隐藏广播。
+     *
+     * iQOO / OriginOS 有时候静音不走标准 RINGER_MODE_CHANGED_ACTION，
+     * 但会走音量变化或内部铃声模式变化。
+     */
+    private static final String ACTION_VOLUME_CHANGED =
+            "android.media.VOLUME_CHANGED_ACTION";
+
+    private static final String ACTION_INTERNAL_RINGER_MODE_CHANGED =
+            "android.media.INTERNAL_RINGER_MODE_CHANGED_ACTION";
+
+    /**
+     * OriginOS 有时会后写入静音状态。
+     *
+     * 如果只收到事件后立即恢复一次，
+     * 系统后面又把静音写回去，就会表现为“震动能恢复，静音恢复不了”。
+     *
+     * 所以收到变化后做一组短延迟确认。
+     * 这不是长期轮询，只是事件后的短时间补偿。
+     */
+    private static final long[] ENFORCE_DELAYS_MS =
+            new long[]{0L, 120L, 450L, 1200L, 3000L};
+
     private Handler handler;
     private NotificationManager notificationManager;
     private boolean receiverRegistered = false;
+
+    private ContentObserver settingsObserver;
+    private boolean settingsObserverRegistered = false;
 
     private final Runnable enforceRunnable = new Runnable() {
         @Override
         public void run() {
             if (!AudioGuard.isEnabled(GuardService.this)) {
+                if (handler != null) {
+                    handler.removeCallbacks(this);
+                }
+
                 stopSelf();
                 return;
             }
@@ -45,16 +79,8 @@ public class GuardService extends Service {
 
             String action = intent.getAction();
 
-            if (AudioManager.RINGER_MODE_CHANGED_ACTION.equals(action)) {
-                /*
-                 * 不是轮询。
-                 *
-                 * 这里只是收到“声音模式变化”事件后，
-                 * 稍微延迟 120ms，让系统状态稳定一下。
-                 *
-                 * 对 OriginOS / iQOO 这类系统更稳。
-                 */
-                scheduleEnforce(120);
+            if (isAudioRelatedAction(action)) {
+                scheduleEnforceBurst();
             }
         }
     };
@@ -77,8 +103,18 @@ public class GuardService extends Service {
 
         registerRingerModeReceiver();
 
-        // 服务启动时检查一次，不循环。
-        scheduleEnforce(0);
+        /*
+         * 监听 Settings 变化。
+         *
+         * iQOO / OriginOS 有时不会发标准铃声模式广播，
+         * 但会改系统设置项，例如音量、勿扰、厂商静音标记。
+         *
+         * 这是事件监听，不是定时轮询。
+         */
+        registerSettingsObserver();
+
+        // 服务启动时做一组确认。
+        scheduleEnforceBurst();
     }
 
     @Override
@@ -88,8 +124,8 @@ public class GuardService extends Service {
             return START_NOT_STICKY;
         }
 
-        // 服务被系统恢复时检查一次，不循环。
-        scheduleEnforce(0);
+        // 服务被系统恢复时做一组确认。
+        scheduleEnforceBurst();
 
         return START_STICKY;
     }
@@ -109,6 +145,8 @@ public class GuardService extends Service {
             receiverRegistered = false;
         }
 
+        unregisterSettingsObserver();
+
         try {
             stopForeground(STOP_FOREGROUND_REMOVE);
         } catch (Exception ignored) {
@@ -122,25 +160,61 @@ public class GuardService extends Service {
         return null;
     }
 
-    private void scheduleEnforce(long delayMs) {
+    private boolean isAudioRelatedAction(String action) {
+        if (action == null) {
+            return false;
+        }
+
+        return AudioManager.RINGER_MODE_CHANGED_ACTION.equals(action)
+                || ACTION_INTERNAL_RINGER_MODE_CHANGED.equals(action)
+                || ACTION_VOLUME_CHANGED.equals(action)
+                || NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED.equals(action)
+                || NotificationManager.ACTION_NOTIFICATION_POLICY_CHANGED.equals(action)
+                || NotificationManager.ACTION_NOTIFICATION_POLICY_ACCESS_GRANTED_CHANGED.equals(action);
+    }
+
+    private void scheduleEnforceBurst() {
         if (handler == null) {
             return;
         }
 
         handler.removeCallbacks(enforceRunnable);
-        handler.postDelayed(enforceRunnable, delayMs);
+
+        for (long delay : ENFORCE_DELAYS_MS) {
+            handler.postDelayed(enforceRunnable, delay);
+        }
     }
 
     private void registerRingerModeReceiver() {
+        if (receiverRegistered) {
+            return;
+        }
+
         try {
             IntentFilter filter = new IntentFilter();
-            filter.addAction(AudioManager.RINGER_MODE_CHANGED_ACTION);
 
+            filter.addAction(AudioManager.RINGER_MODE_CHANGED_ACTION);
+            filter.addAction(ACTION_INTERNAL_RINGER_MODE_CHANGED);
+            filter.addAction(ACTION_VOLUME_CHANGED);
+            filter.addAction(NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED);
+            filter.addAction(NotificationManager.ACTION_NOTIFICATION_POLICY_CHANGED);
+            filter.addAction(NotificationManager.ACTION_NOTIFICATION_POLICY_ACCESS_GRANTED_CHANGED);
+
+            /*
+             * Android 13+ 动态广播需要指定 exported 标记。
+             *
+             * 这里用 RECEIVER_EXPORTED 是为了兼容部分厂商系统：
+             * 有些音频/静音广播不是 system UID 直接发出，
+             * 用 NOT_EXPORTED 可能收不到。
+             *
+             * 这个 Receiver 只会触发 enforce，不读取外部数据，
+             * 被其它 App 伪造广播的风险很低。
+             */
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 registerReceiver(
                         ringerModeReceiver,
                         filter,
-                        Context.RECEIVER_NOT_EXPORTED
+                        Context.RECEIVER_EXPORTED
                 );
             } else {
                 registerReceiver(ringerModeReceiver, filter);
@@ -151,6 +225,74 @@ public class GuardService extends Service {
         }
     }
 
+    private void registerSettingsObserver() {
+        if (handler == null) {
+            return;
+        }
+
+        if (settingsObserverRegistered) {
+            return;
+        }
+
+        settingsObserver = new ContentObserver(handler) {
+            @Override
+            public void onChange(boolean selfChange) {
+                scheduleEnforceBurst();
+            }
+
+            @Override
+            public void onChange(boolean selfChange, Uri uri) {
+                scheduleEnforceBurst();
+            }
+        };
+
+        boolean registered = false;
+
+        try {
+            getContentResolver().registerContentObserver(
+                    Settings.System.CONTENT_URI,
+                    true,
+                    settingsObserver
+            );
+            registered = true;
+        } catch (Exception ignored) {
+        }
+
+        try {
+            getContentResolver().registerContentObserver(
+                    Settings.Global.CONTENT_URI,
+                    true,
+                    settingsObserver
+            );
+            registered = true;
+        } catch (Exception ignored) {
+        }
+
+        try {
+            getContentResolver().registerContentObserver(
+                    Settings.Secure.CONTENT_URI,
+                    true,
+                    settingsObserver
+            );
+            registered = true;
+        } catch (Exception ignored) {
+        }
+
+        settingsObserverRegistered = registered;
+    }
+
+    private void unregisterSettingsObserver() {
+        if (settingsObserverRegistered && settingsObserver != null) {
+            try {
+                getContentResolver().unregisterContentObserver(settingsObserver);
+            } catch (Exception ignored) {
+            }
+        }
+
+        settingsObserverRegistered = false;
+        settingsObserver = null;
+    }
+
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
@@ -159,7 +301,7 @@ public class GuardService extends Service {
                     NotificationManager.IMPORTANCE_LOW
             );
 
-            channel.setDescription("检测到静音或震动后自动切回响铃，不修改音量");
+            channel.setDescription("检测静音、震动、勿扰或 iQOO 零铃声音量后自动恢复响铃");
             channel.setShowBadge(false);
             channel.enableVibration(false);
             channel.setSound(null, null);
@@ -191,7 +333,7 @@ public class GuardService extends Service {
 
         return builder
                 .setContentTitle("防静音防震动运行中")
-                .setContentText("只退出静音/震动，不修改音量")
+                .setContentText("兼容 iQOO 静音：必要时恢复铃声音量")
                 .setSmallIcon(R.drawable.ic_stat_guard)
                 .setContentIntent(pendingIntent)
                 .setOngoing(true)
