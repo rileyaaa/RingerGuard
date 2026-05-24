@@ -1,140 +1,53 @@
-package com.example.ringerguard;
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-import android.content.Context;
-import android.content.SharedPreferences;
-import android.media.AudioManager;
+    <!-- 用来把静音/震动切回响铃 -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
-public final class AudioGuard {
+    <!-- iQOO / OriginOS 的静音有时实际是勿扰，需要用户在系统设置里手动允许 -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
-    public static final String PREFS = "ringer_guard_prefs";
-    public static final String KEY_ENABLED = "enabled";
+    <!-- 前台服务：提高 OriginOS / iQOO 后台存活率 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
-    private AudioGuard() {
-    }
+    <!-- 开机后恢复守护 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    public static SharedPreferences prefs(Context context) {
-        return context.getApplicationContext()
-                .getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-    }
+    <!-- Android 13+ 前台服务通知权限 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    public static boolean isEnabled(Context context) {
-        return prefs(context).getBoolean(KEY_ENABLED, false);
-    }
+    <application
+        android:allowBackup="false"
+        android:icon="@drawable/ic_stat_guard"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
-    public static void setEnabled(Context context, boolean enabled) {
-        prefs(context).edit()
-                .putBoolean(KEY_ENABLED, enabled)
-                .apply();
-    }
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
 
-    private static AudioManager audio(Context context) {
-        return (AudioManager) context.getApplicationContext()
-                .getSystemService(Context.AUDIO_SERVICE);
-    }
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
 
-    /**
-     * 核心逻辑：
-     *
-     * 只处理这两种情况：
-     * 1. 静音
-     * 2. 震动
-     *
-     * 一旦发现静音或震动，就切回响铃。
-     *
-     * 注意：
-     * 这里不调用 setStreamVolume()。
-     * 所以不会修改铃声音量、媒体音量、通知音量、闹钟音量。
-     */
-    public static boolean enforce(Context context) {
-        if (context == null) {
-            return false;
-        }
+        <service
+            android:name=".GuardService"
+            android:exported="false"
+            android:stopWithTask="false" />
 
-        AudioManager am = audio(context);
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
-        if (am == null) {
-            return false;
-        }
+    </application>
 
-        try {
-            int mode = am.getRingerMode();
-
-            if (mode == AudioManager.RINGER_MODE_NORMAL) {
-                return false;
-            }
-
-            if (mode == AudioManager.RINGER_MODE_SILENT
-                    || mode == AudioManager.RINGER_MODE_VIBRATE) {
-                am.setRingerMode(AudioManager.RINGER_MODE_NORMAL);
-                return true;
-            }
-
-            return false;
-        } catch (SecurityException e) {
-            return false;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    public static int getCurrentRingerMode(Context context) {
-        try {
-            AudioManager am = audio(context);
-
-            if (am == null) {
-                return -1;
-            }
-
-            return am.getRingerMode();
-        } catch (Exception e) {
-            return -1;
-        }
-    }
-
-    /**
-     * 只读当前铃声音量。
-     * 只用于界面显示，不会修改。
-     */
-    public static int getCurrentRingVolumeReadOnly(Context context) {
-        try {
-            AudioManager am = audio(context);
-
-            if (am == null) {
-                return 0;
-            }
-
-            return am.getStreamVolume(AudioManager.STREAM_RING);
-        } catch (Exception e) {
-            return 0;
-        }
-    }
-
-    /**
-     * 只读最大铃声音量。
-     */
-    public static int getMaxRingVolumeReadOnly(Context context) {
-        try {
-            AudioManager am = audio(context);
-
-            if (am == null) {
-                return 1;
-            }
-
-            return Math.max(1, am.getStreamMaxVolume(AudioManager.STREAM_RING));
-        } catch (Exception e) {
-            return 1;
-        }
-    }
-
-    public static String ringerModeToText(int mode) {
-        if (mode == AudioManager.RINGER_MODE_NORMAL) {
-            return "响铃";
-        } else if (mode == AudioManager.RINGER_MODE_VIBRATE) {
-            return "震动";
-        } else if (mode == AudioManager.RINGER_MODE_SILENT) {
-            return "静音";
-        } else {
-            return "未知";
-        }
-    }
-}
+</manifest>
