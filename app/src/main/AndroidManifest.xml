@@ -3,6 +3,9 @@
     <!-- 用来把静音/震动切回响铃 -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
+    <!-- iQOO / OriginOS 的静音有时实际是勿扰，需要用户在系统设置里手动允许 -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
     <!-- 前台服务：提高 OriginOS / iQOO 后台存活率 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
