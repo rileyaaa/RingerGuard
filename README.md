@@ -58,3 +58,11 @@ App 会监听 Android 系统的声音模式变化事件：
 
 ```java
 AudioManager.RINGER_MODE_CHANGED_ACTION
+
+
+### v1.0.2 优化说明
+
+- 优化前台服务的监听恢复逻辑，降低服务仍在但监听失效的概率。
+- 收窄系统设置监听范围，仅关注铃声/通知/勿扰相关变化。
+- 过滤无关媒体音量变化，减少不必要触发。
+- 不使用轮询、WakeLock、AlarmManager、WorkManager 或亮屏/解锁触发。
