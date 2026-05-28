@@ -419,14 +419,25 @@ public final class AudioGuard {
                 -1
         );
 
-        if (currentVolume > 0) {
-            prefs(context).edit()
-                    .putInt(KEY_LAST_NON_ZERO_RING_VOLUME, currentVolume)
-                    .apply();
+        if (currentVolume <= 0) {
+            return false;
+        }
+
+        SharedPreferences preferences = prefs(context);
+        int savedVolume = preferences.getInt(
+                KEY_LAST_NON_ZERO_RING_VOLUME,
+                -1
+        );
+
+        if (savedVolume == currentVolume) {
             return true;
         }
 
-        return false;
+        preferences.edit()
+                .putInt(KEY_LAST_NON_ZERO_RING_VOLUME, currentVolume)
+                .apply();
+
+        return true;
     }
 
     private static int getRecoveryRingVolume(Context context, AudioManager am) {
@@ -570,6 +581,12 @@ public final class AudioGuard {
 
         int max = getMaxStreamVolumeSafe(am, stream, volume);
         int safeVolume = clamp(volume, 1, max);
+
+        int currentVolume = getStreamVolumeSafe(am, stream, -1);
+
+        if (currentVolume == safeVolume) {
+            return false;
+        }
 
         try {
             am.setStreamVolume(stream, safeVolume, 0);
