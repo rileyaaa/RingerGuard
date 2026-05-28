@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.BroadcastReceiver;
+import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -16,6 +17,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 
 public class GuardService extends Service {
@@ -32,6 +34,9 @@ public class GuardService extends Service {
     private static final String ACTION_VOLUME_CHANGED =
             "android.media.VOLUME_CHANGED_ACTION";
 
+    private static final String EXTRA_VOLUME_STREAM_TYPE =
+            "android.media.EXTRA_VOLUME_STREAM_TYPE";
+
     private static final String ACTION_INTERNAL_RINGER_MODE_CHANGED =
             "android.media.INTERNAL_RINGER_MODE_CHANGED_ACTION";
 
@@ -47,12 +52,19 @@ public class GuardService extends Service {
     private static final long[] ENFORCE_DELAYS_MS =
             new long[]{0L, 120L, 450L, 1200L, 3000L};
 
+    /**
+     * 同一次音频变化经常会同时触发多个广播和多个 Settings 回调。
+     * 这里做短节流，避免同一轮变化重复排队；不会形成轮询。
+     */
+    private static final long ENFORCE_BURST_DEBOUNCE_MS = 650L;
+
     private Handler handler;
     private NotificationManager notificationManager;
     private boolean receiverRegistered = false;
 
     private ContentObserver settingsObserver;
     private boolean settingsObserverRegistered = false;
+    private long lastEnforceBurstAtMs = 0L;
 
     private final Runnable enforceRunnable = new Runnable() {
         @Override
@@ -79,8 +91,8 @@ public class GuardService extends Service {
 
             String action = intent.getAction();
 
-            if (isAudioRelatedAction(action)) {
-                scheduleEnforceBurst();
+            if (isAudioRelatedAction(action) && isRelevantAudioEvent(intent)) {
+                scheduleEnforceBurst(false);
             }
         }
     };
@@ -101,20 +113,10 @@ public class GuardService extends Service {
          */
         startForeground(NOTIFICATION_ID, buildNotification());
 
-        registerRingerModeReceiver();
-
-        /*
-         * 监听 Settings 变化。
-         *
-         * iQOO / OriginOS 有时不会发标准铃声模式广播，
-         * 但会改系统设置项，例如音量、勿扰、厂商静音标记。
-         *
-         * 这是事件监听，不是定时轮询。
-         */
-        registerSettingsObserver();
+        ensureListenersRegistered();
 
         // 服务启动时做一组确认。
-        scheduleEnforceBurst();
+        scheduleEnforceBurst(true);
     }
 
     @Override
@@ -124,10 +126,65 @@ public class GuardService extends Service {
             return START_NOT_STICKY;
         }
 
-        // 服务被系统恢复时做一组确认。
-        scheduleEnforceBurst();
+        // 服务被系统恢复或被再次 startService 时，确认监听链路仍然挂着。
+        ensureListenersRegistered();
+        scheduleEnforceBurst(true);
 
         return START_STICKY;
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+
+        if (!AudioGuard.isEnabled(this)) {
+            return;
+        }
+
+        /*
+         * 只在真正内存压力或后台清理阶段重挂监听。
+         *
+         * TRIM_MEMORY_UI_HIDDEN 只是界面退到后台，不代表监听失效，
+         * 不在这里处理，避免用户每次退出界面都触发额外操作。
+         */
+        boolean shouldRebind = level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
+                || level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+                || level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND;
+
+        if (shouldRebind) {
+            rebindListeners();
+            scheduleEnforceBurst(true);
+        }
+    }
+
+    @Override
+    public void onLowMemory() {
+        super.onLowMemory();
+
+        if (!AudioGuard.isEnabled(this)) {
+            return;
+        }
+
+        rebindListeners();
+        scheduleEnforceBurst(true);
+    }
+
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        super.onTaskRemoved(rootIntent);
+
+        if (!AudioGuard.isEnabled(this)) {
+            return;
+        }
+
+        /*
+         * 用户/系统把最近任务移除时，前台服务理论上仍应继续运行。
+         * 但部分 OriginOS 版本可能只留下通知或让动态监听链路异常。
+         * 这里不做定时保活，只做一次被动恢复尝试。
+         */
+        ensureListenersRegistered();
+        scheduleEnforceBurst(true);
+        requestServiceStart();
     }
 
     @Override
@@ -136,15 +193,7 @@ public class GuardService extends Service {
             handler.removeCallbacks(enforceRunnable);
         }
 
-        if (receiverRegistered) {
-            try {
-                unregisterReceiver(ringerModeReceiver);
-            } catch (Exception ignored) {
-            }
-
-            receiverRegistered = false;
-        }
-
+        unregisterRingerModeReceiver();
         unregisterSettingsObserver();
 
         try {
@@ -160,6 +209,43 @@ public class GuardService extends Service {
         return null;
     }
 
+    private void ensureListenersRegistered() {
+        registerRingerModeReceiver();
+        registerSettingsObserver();
+    }
+
+    private void rebindListeners() {
+        unregisterRingerModeReceiver();
+        unregisterSettingsObserver();
+        ensureListenersRegistered();
+    }
+
+    private void unregisterRingerModeReceiver() {
+        if (!receiverRegistered) {
+            return;
+        }
+
+        try {
+            unregisterReceiver(ringerModeReceiver);
+        } catch (Exception ignored) {
+        }
+
+        receiverRegistered = false;
+    }
+
+    private void requestServiceStart() {
+        Intent serviceIntent = new Intent(this, GuardService.class);
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent);
+            } else {
+                startService(serviceIntent);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     private boolean isAudioRelatedAction(String action) {
         if (action == null) {
             return false;
@@ -173,11 +259,42 @@ public class GuardService extends Service {
                 || NotificationManager.ACTION_NOTIFICATION_POLICY_ACCESS_GRANTED_CHANGED.equals(action);
     }
 
-    private void scheduleEnforceBurst() {
+    private boolean isRelevantAudioEvent(Intent intent) {
+        if (intent == null) {
+            return false;
+        }
+
+        String action = intent.getAction();
+
+        if (!ACTION_VOLUME_CHANGED.equals(action)) {
+            return true;
+        }
+
+        int stream = intent.getIntExtra(EXTRA_VOLUME_STREAM_TYPE, Integer.MIN_VALUE);
+
+        /*
+         * 有些厂商 ROM 可能不带 stream extra。此时保守处理，避免漏掉铃声变化。
+         */
+        if (stream == Integer.MIN_VALUE) {
+            return true;
+        }
+
+        return stream == AudioManager.STREAM_RING
+                || stream == AudioManager.STREAM_NOTIFICATION;
+    }
+
+    private void scheduleEnforceBurst(boolean force) {
         if (handler == null) {
             return;
         }
 
+        long now = SystemClock.elapsedRealtime();
+
+        if (!force && now - lastEnforceBurstAtMs < ENFORCE_BURST_DEBOUNCE_MS) {
+            return;
+        }
+
+        lastEnforceBurstAtMs = now;
         handler.removeCallbacks(enforceRunnable);
 
         for (long delay : ENFORCE_DELAYS_MS) {
@@ -237,48 +354,53 @@ public class GuardService extends Service {
         settingsObserver = new ContentObserver(handler) {
             @Override
             public void onChange(boolean selfChange) {
-                scheduleEnforceBurst();
+                scheduleEnforceBurst(false);
             }
 
             @Override
             public void onChange(boolean selfChange, Uri uri) {
-                scheduleEnforceBurst();
+                scheduleEnforceBurst(false);
             }
         };
 
         boolean registered = false;
 
-        try {
-            getContentResolver().registerContentObserver(
-                    Settings.System.CONTENT_URI,
-                    true,
-                    settingsObserver
-            );
-            registered = true;
-        } catch (Exception ignored) {
-        }
+        /*
+         * 不再监听整棵 Settings.System / Global / Secure。
+         * 只监听和铃声、通知音量、响铃模式、勿扰直接相关的 URI，
+         * 避免亮度、输入法、系统杂项变化也唤醒本服务逻辑。
+         */
+        registered |= registerSettingUri(Settings.System.getUriFor("mode_ringer"));
+        registered |= registerSettingUri(Settings.System.getUriFor("volume_ring"));
+        registered |= registerSettingUri(Settings.System.getUriFor("volume_notification"));
+        registered |= registerSettingUri(Settings.System.getUriFor("mute_streams_affected"));
 
-        try {
-            getContentResolver().registerContentObserver(
-                    Settings.Global.CONTENT_URI,
-                    true,
-                    settingsObserver
-            );
-            registered = true;
-        } catch (Exception ignored) {
-        }
+        // 少数 vivo/iQOO ROM 可能使用带 speaker 后缀的音量项。
+        registered |= registerSettingUri(Settings.System.getUriFor("volume_ring_speaker"));
+        registered |= registerSettingUri(Settings.System.getUriFor("volume_notification_speaker"));
 
-        try {
-            getContentResolver().registerContentObserver(
-                    Settings.Secure.CONTENT_URI,
-                    true,
-                    settingsObserver
-            );
-            registered = true;
-        } catch (Exception ignored) {
-        }
+        // 勿扰相关。
+        registered |= registerSettingUri(Settings.Global.getUriFor("zen_mode"));
+        registered |= registerSettingUri(Settings.Global.getUriFor("zen_mode_config_etag"));
 
         settingsObserverRegistered = registered;
+    }
+
+    private boolean registerSettingUri(Uri uri) {
+        if (settingsObserver == null || uri == null) {
+            return false;
+        }
+
+        try {
+            getContentResolver().registerContentObserver(
+                    uri,
+                    false,
+                    settingsObserver
+            );
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private void unregisterSettingsObserver() {
