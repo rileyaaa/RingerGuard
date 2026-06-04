@@ -31,14 +31,9 @@ public class GuardService extends Service {
      * iQOO / OriginOS 有时候静音不走标准 RINGER_MODE_CHANGED_ACTION，
      * 但会走音量变化或内部铃声模式变化。
      */
-    private static final String ACTION_VOLUME_CHANGED =
-            "android.media.VOLUME_CHANGED_ACTION";
-
-    private static final String EXTRA_VOLUME_STREAM_TYPE =
-            "android.media.EXTRA_VOLUME_STREAM_TYPE";
-
-    private static final String ACTION_INTERNAL_RINGER_MODE_CHANGED =
-            "android.media.INTERNAL_RINGER_MODE_CHANGED_ACTION";
+    private static final String ACTION_VOLUME_CHANGED = "android.media.VOLUME_CHANGED_ACTION";
+    private static final String EXTRA_VOLUME_STREAM_TYPE = "android.media.EXTRA_VOLUME_STREAM_TYPE";
+    private static final String ACTION_INTERNAL_RINGER_MODE_CHANGED = "android.media.INTERNAL_RINGER_MODE_CHANGED_ACTION";
 
     /**
      * OriginOS 有时会后写入静音状态。
@@ -49,8 +44,7 @@ public class GuardService extends Service {
      * 所以收到变化后做一组短延迟确认。
      * 这不是长期轮询，只是事件后的短时间补偿。
      */
-    private static final long[] ENFORCE_DELAYS_MS =
-            new long[]{0L, 120L, 450L, 1200L, 3000L};
+    private static final long[] ENFORCE_DELAYS_MS = new long[]{0L, 120L, 450L, 1200L, 3000L};
 
     /**
      * 同一次音频变化经常会同时触发多个广播和多个 Settings 回调。
@@ -58,10 +52,20 @@ public class GuardService extends Service {
      */
     private static final long ENFORCE_BURST_DEBOUNCE_MS = 650L;
 
+    /**
+     * 低频自愈检查。
+     *
+     * 主机制仍然是事件触发恢复；这里仅用于降低“前台服务仍在，
+     * 但动态广播或 Settings 监听链路假死”时长期失效的概率。
+     *
+     * 使用 Handler.postDelayed，不使用 WakeLock / AlarmManager / WorkManager，
+     * 不主动唤醒设备。
+     */
+    private static final long WATCHDOG_INTERVAL_MS = 4L * 60L * 60L * 1000L;
+
     private Handler handler;
     private NotificationManager notificationManager;
     private boolean receiverRegistered = false;
-
     private ContentObserver settingsObserver;
     private boolean settingsObserverRegistered = false;
     private long lastEnforceBurstAtMs = 0L;
@@ -73,12 +77,31 @@ public class GuardService extends Service {
                 if (handler != null) {
                     handler.removeCallbacks(this);
                 }
-
                 stopSelf();
                 return;
             }
 
             AudioGuard.enforce(GuardService.this);
+        }
+    };
+
+    private final Runnable watchdogRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (handler == null) {
+                return;
+            }
+
+            if (!AudioGuard.isEnabled(GuardService.this)) {
+                handler.removeCallbacks(this);
+                stopSelf();
+                return;
+            }
+
+            ensureListenersRegistered();
+            AudioGuard.enforce(GuardService.this);
+
+            handler.postDelayed(this, WATCHDOG_INTERVAL_MS);
         }
     };
 
@@ -90,7 +113,6 @@ public class GuardService extends Service {
             }
 
             String action = intent.getAction();
-
             if (isAudioRelatedAction(action) && isRelevantAudioEvent(intent)) {
                 scheduleEnforceBurst(false);
             }
@@ -102,8 +124,7 @@ public class GuardService extends Service {
         super.onCreate();
 
         handler = new Handler(Looper.getMainLooper());
-        notificationManager =
-                (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        notificationManager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
 
         createNotificationChannel();
 
@@ -117,6 +138,9 @@ public class GuardService extends Service {
 
         // 服务启动时做一组确认。
         scheduleEnforceBurst(true);
+
+        // 低频兜底检查：不立即执行，避免和启动确认重复。
+        startWatchdog();
     }
 
     @Override
@@ -129,6 +153,7 @@ public class GuardService extends Service {
         // 服务被系统恢复或被再次 startService 时，确认监听链路仍然挂着。
         ensureListenersRegistered();
         scheduleEnforceBurst(true);
+        startWatchdog();
 
         return START_STICKY;
     }
@@ -191,6 +216,7 @@ public class GuardService extends Service {
     public void onDestroy() {
         if (handler != null) {
             handler.removeCallbacks(enforceRunnable);
+            handler.removeCallbacks(watchdogRunnable);
         }
 
         unregisterRingerModeReceiver();
@@ -218,6 +244,15 @@ public class GuardService extends Service {
         unregisterRingerModeReceiver();
         unregisterSettingsObserver();
         ensureListenersRegistered();
+    }
+
+    private void startWatchdog() {
+        if (handler == null) {
+            return;
+        }
+
+        handler.removeCallbacks(watchdogRunnable);
+        handler.postDelayed(watchdogRunnable, WATCHDOG_INTERVAL_MS);
     }
 
     private void unregisterRingerModeReceiver() {
@@ -265,7 +300,6 @@ public class GuardService extends Service {
         }
 
         String action = intent.getAction();
-
         if (!ACTION_VOLUME_CHANGED.equals(action)) {
             return true;
         }
@@ -289,14 +323,13 @@ public class GuardService extends Service {
         }
 
         long now = SystemClock.elapsedRealtime();
-
         if (!force && now - lastEnforceBurstAtMs < ENFORCE_BURST_DEBOUNCE_MS) {
             return;
         }
 
         lastEnforceBurstAtMs = now;
-        handler.removeCallbacks(enforceRunnable);
 
+        handler.removeCallbacks(enforceRunnable);
         for (long delay : ENFORCE_DELAYS_MS) {
             handler.postDelayed(enforceRunnable, delay);
         }
@@ -309,7 +342,6 @@ public class GuardService extends Service {
 
         try {
             IntentFilter filter = new IntentFilter();
-
             filter.addAction(AudioManager.RINGER_MODE_CHANGED_ACTION);
             filter.addAction(ACTION_INTERNAL_RINGER_MODE_CHANGED);
             filter.addAction(ACTION_VOLUME_CHANGED);
@@ -422,7 +454,6 @@ public class GuardService extends Service {
                     "防静音防震动服务",
                     NotificationManager.IMPORTANCE_LOW
             );
-
             channel.setDescription("检测静音、震动、勿扰或 iQOO 零铃声音量后自动恢复响铃");
             channel.setShowBadge(false);
             channel.enableVibration(false);
@@ -437,7 +468,6 @@ public class GuardService extends Service {
 
     private Notification buildNotification() {
         Intent openIntent = new Intent(this, MainActivity.class);
-
         PendingIntent pendingIntent = PendingIntent.getActivity(
                 this,
                 0,
@@ -446,7 +476,6 @@ public class GuardService extends Service {
         );
 
         Notification.Builder builder;
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             builder = new Notification.Builder(this, CHANNEL_ID);
         } else {
