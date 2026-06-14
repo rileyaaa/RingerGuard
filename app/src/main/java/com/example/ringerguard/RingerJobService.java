@@ -91,10 +91,13 @@ public class RingerJobService extends JobService {
 
     @Override
     public boolean onStartJob(JobParameters params) {
+        DiagLog.log(this, "[兜底任务] onStartJob 执行 守护="
+                + (AudioGuard.isEnabled(this) ? "开" : "关"));
+
         // enforce 为同步快速操作，直接完成即可。
         if (AudioGuard.isEnabled(this)) {
             try {
-                AudioGuard.enforce(this);
+                AudioGuard.enforce(this, "兜底任务");
             } catch (Exception ignored) {
             }
         } else {
