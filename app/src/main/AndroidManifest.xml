@@ -1,19 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 用来把静音/震动切回响铃 -->
+    <!-- 调整响铃模式 / 铃声音量。普通权限，安装即授予，无弹窗 -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
-    <!-- iQOO / OriginOS 的静音有时实际是勿扰，需要用户在系统设置里手动允许 -->
+    <!-- iQOO / OriginOS 的“静音”有时实际是勿扰，退出勿扰需要此权限（用户在设置里授予） -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
-    <!-- 前台服务：提高 OriginOS / iQOO 后台存活率 -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-
-    <!-- 开机后恢复守护 -->
+    <!-- 开机 / 应用更新后重新登记低频兜底任务 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-
-    <!-- Android 13+ 前台服务通知权限 -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="false"
@@ -33,10 +27,28 @@
             </intent-filter>
         </activity>
 
+        <!--
+            来电筛选服务：持有“来电筛选”角色后，系统会在每次来电、响铃之前
+            把本服务拉起来调用一次（即使本应用平时没有任何进程在运行）。
+            我们在那一刻恢复响铃并放行来电，因此运营商来电必响，且平时零常驻进程。
+        -->
         <service
-            android:name=".GuardService"
+            android:name=".CallGuardScreeningService"
+            android:exported="true"
+            android:permission="android.permission.BIND_SCREENING_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.CallScreeningService" />
+            </intent-filter>
+        </service>
+
+        <!--
+            低频兜底任务：JobScheduler 周期触发，两次运行之间无常驻进程，
+            不会“假死”，几乎不耗电。用于微信等 VoIP / 一般静音的最佳努力覆盖。
+        -->
+        <service
+            android:name=".RingerJobService"
             android:exported="false"
-            android:stopWithTask="false" />
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <receiver
             android:name=".BootReceiver"
