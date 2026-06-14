@@ -3,6 +3,8 @@ package com.example.ringerguard;
 import android.app.Activity;
 import android.app.NotificationManager;
 import android.app.role.RoleManager;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.media.AudioManager;
@@ -22,6 +24,7 @@ public class MainActivity extends Activity {
     private static final int REQ_CALL_SCREENING_ROLE = 2001;
 
     private TextView statusView;
+    private TextView logView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -40,10 +43,11 @@ public class MainActivity extends Activity {
         AudioGuard.rememberCurrentRingVolumeIfNonZero(this);
 
         if (AudioGuard.isEnabled(this)) {
-            AudioGuard.enforce(this);
+            AudioGuard.enforce(this, "打开界面");
         }
 
         updateStatus();
+        updateLog();
     }
 
     private void buildUi() {
@@ -109,7 +113,7 @@ public class MainActivity extends Activity {
         root.addView(fixButton, matchWrap());
 
         fixButton.setOnClickListener(v -> {
-            boolean changed = AudioGuard.enforce(this);
+            boolean changed = AudioGuard.enforce(this, "手动修复");
             updateStatus();
 
             int mode = AudioGuard.getCurrentRingerMode(this);
@@ -160,9 +164,52 @@ public class MainActivity extends Activity {
         note.setTextSize(14);
         root.addView(note, matchWrap());
 
+        TextView logTitle = new TextView(this);
+        logTitle.setText("\n诊断日志（最近事件，自上而下：新 → 旧）：");
+        logTitle.setTextSize(16);
+        root.addView(logTitle, matchWrap());
+
+        logView = new TextView(this);
+        logView.setTextSize(12);
+        logView.setTextIsSelectable(true);
+        root.addView(logView, matchWrap());
+
+        Button copyLogButton = new Button(this);
+        copyLogButton.setText("复制诊断日志");
+        root.addView(copyLogButton, matchWrap());
+
+        copyLogButton.setOnClickListener(v -> {
+            String text = DiagLog.read(this);
+
+            if (text == null || text.isEmpty()) {
+                Toast.makeText(this, "暂无日志", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            try {
+                ClipboardManager cm =
+                        (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(ClipData.newPlainText("RingerGuard 诊断日志", text));
+                Toast.makeText(this, "已复制到剪贴板", Toast.LENGTH_SHORT).show();
+            } catch (Exception e) {
+                Toast.makeText(this, "复制失败：" + e.getMessage(), Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        Button clearLogButton = new Button(this);
+        clearLogButton.setText("清空诊断日志");
+        root.addView(clearLogButton, matchWrap());
+
+        clearLogButton.setOnClickListener(v -> {
+            DiagLog.clear(this);
+            updateLog();
+            Toast.makeText(this, "已清空日志", Toast.LENGTH_SHORT).show();
+        });
+
         setContentView(scrollView);
 
         updateStatus();
+        updateLog();
     }
 
     private String buildNoteText() {
@@ -194,7 +241,7 @@ public class MainActivity extends Activity {
         AudioGuard.setEnabled(this, true);
 
         RingerJobService.schedule(this);
-        AudioGuard.enforce(this);
+        AudioGuard.enforce(this, "开启守护");
 
         updateStatus();
 
@@ -298,6 +345,20 @@ public class MainActivity extends Activity {
                         "勿扰权限：" + notificationPolicyAccessText() + "\n" +
                         "勿扰状态：" + AudioGuard.interruptionFilterToText(interruptionFilter) + "\n"
         );
+    }
+
+    private void updateLog() {
+        if (logView == null) {
+            return;
+        }
+
+        String text = DiagLog.read(this);
+
+        if (text == null || text.isEmpty()) {
+            logView.setText("（暂无日志。建议：清空日志 → 重启手机 → 手动静音 → 打来电测试 → 回到本页查看）");
+        } else {
+            logView.setText(text);
+        }
     }
 
     private String notificationPolicyAccessText() {
