@@ -1,10 +1,10 @@
 package com.example.ringerguard;
 
-import android.Manifest;
 import android.app.Activity;
 import android.app.NotificationManager;
+import android.app.role.RoleManager;
+import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
@@ -19,10 +19,9 @@ import android.widget.Toast;
 
 public class MainActivity extends Activity {
 
-    private static final int REQ_POST_NOTIFICATIONS = 1001;
+    private static final int REQ_CALL_SCREENING_ROLE = 2001;
 
     private TextView statusView;
-    private boolean pendingStartAfterNotificationPermission = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -36,8 +35,7 @@ public class MainActivity extends Activity {
         super.onResume();
 
         /*
-         * 如果当前是正常非 0 铃声音量，顺手记住。
-         * 如果用户刚从勿扰权限页面回来，并且守护已开启，立即再恢复一次。
+         * 打开界面时：顺手记住当前非 0 铃声音量；若守护已开启，立即再恢复一次。
          */
         AudioGuard.rememberCurrentRingVolumeIfNonZero(this);
 
@@ -64,14 +62,13 @@ public class MainActivity extends Activity {
 
         TextView desc = new TextView(this);
         desc.setText(
-                "\n功能：\n" +
-                        "手机一旦进入静音或震动，就自动切回响铃。\n\n" +
-                        "iQOO / OriginOS 兼容处理：\n" +
-                        "1. 标准静音/震动：切回响铃模式。\n" +
-                        "2. 勿扰式静音：有勿扰权限时关闭勿扰。\n" +
-                        "3. 零音量式静音：只在铃声音量为 0 时，恢复到上次非 0 铃声音量。\n\n" +
-                        "不会修改媒体音量、闹钟音量。\n" +
-                        "为了解决 iQOO 静音，铃声音量为 0 时会被恢复。"
+                "\n工作方式（省电版）：\n" +
+                        "1. 运营商来电：系统在响铃前自动把铃声切回响铃（必响）。\n" +
+                        "2. 平时不常驻后台、不轮询，待机几乎不耗电。\n" +
+                        "3. 每 4 小时低频兜底一次，覆盖微信等网络电话的“尽量有声”。\n\n" +
+                        "iQOO / OriginOS 兼容：标准静音/震动、勿扰式静音、铃声音量被压到 0、" +
+                        "铃声流被 mute，都会尝试恢复。\n" +
+                        "不会修改媒体音量、闹钟音量。"
         );
         desc.setTextSize(15);
         root.addView(desc, matchWrap());
@@ -84,7 +81,13 @@ public class MainActivity extends Activity {
         startButton.setText("开启防静音/震动");
         root.addView(startButton, matchWrap());
 
-        startButton.setOnClickListener(v -> startGuardWithPermissionCheck());
+        startButton.setOnClickListener(v -> startGuard());
+
+        Button roleButton = new Button(this);
+        roleButton.setText("授予来电筛选权限（来电必响的关键）");
+        root.addView(roleButton, matchWrap());
+
+        roleButton.setOnClickListener(v -> requestCallScreeningRole());
 
         Button rememberVolumeButton = new Button(this);
         rememberVolumeButton.setText("记住当前铃声音量作为恢复音量");
@@ -95,17 +98,9 @@ public class MainActivity extends Activity {
             updateStatus();
 
             if (saved) {
-                Toast.makeText(
-                        this,
-                        "已记住当前铃声音量",
-                        Toast.LENGTH_SHORT
-                ).show();
+                Toast.makeText(this, "已记住当前铃声音量", Toast.LENGTH_SHORT).show();
             } else {
-                Toast.makeText(
-                        this,
-                        "当前铃声音量为 0，不能作为恢复音量",
-                        Toast.LENGTH_SHORT
-                ).show();
+                Toast.makeText(this, "当前铃声音量为 0，不能作为恢复音量", Toast.LENGTH_SHORT).show();
             }
         });
 
@@ -128,38 +123,17 @@ public class MainActivity extends Activity {
                     && !muted
                     && !dndActive) {
                 if (changed) {
-                    Toast.makeText(
-                            this,
-                            "已恢复到可响铃状态",
-                            Toast.LENGTH_SHORT
-                    ).show();
+                    Toast.makeText(this, "已恢复到可响铃状态", Toast.LENGTH_SHORT).show();
                 } else {
-                    Toast.makeText(
-                            this,
-                            "当前已是可响铃状态",
-                            Toast.LENGTH_SHORT
-                    ).show();
+                    Toast.makeText(this, "当前已是可响铃状态", Toast.LENGTH_SHORT).show();
                 }
             } else if (dndActive && !AudioGuard.hasNotificationPolicyAccess(this)) {
-                Toast.makeText(
-                        this,
-                        "恢复失败：iQOO 静音可能是勿扰，请先允许勿扰权限",
-                        Toast.LENGTH_LONG
-                ).show();
-
+                Toast.makeText(this, "恢复失败：iQOO 静音可能是勿扰，请先允许勿扰权限", Toast.LENGTH_LONG).show();
                 openNotificationPolicyAccessSettings();
             } else if (volume == 0) {
-                Toast.makeText(
-                        this,
-                        "恢复失败：铃声音量仍为 0，可能被系统策略限制",
-                        Toast.LENGTH_LONG
-                ).show();
+                Toast.makeText(this, "恢复失败：铃声音量仍为 0，可能被系统策略限制", Toast.LENGTH_LONG).show();
             } else {
-                Toast.makeText(
-                        this,
-                        "恢复失败，可能被系统策略限制；请检查勿扰权限和后台权限",
-                        Toast.LENGTH_LONG
-                ).show();
+                Toast.makeText(this, "恢复失败，可能被系统策略限制；请检查勿扰权限和后台权限", Toast.LENGTH_LONG).show();
             }
         });
 
@@ -167,13 +141,7 @@ public class MainActivity extends Activity {
         stopButton.setText("停止防静音/震动");
         root.addView(stopButton, matchWrap());
 
-        stopButton.setOnClickListener(v -> {
-            AudioGuard.setEnabled(this, false);
-            stopService(new Intent(this, GuardService.class));
-            updateStatus();
-
-            Toast.makeText(this, "已停止", Toast.LENGTH_SHORT).show();
-        });
+        stopButton.setOnClickListener(v -> stopGuard());
 
         Button dndSettingsButton = new Button(this);
         dndSettingsButton.setText("打开勿扰权限设置（iQOO 静音建议开启）");
@@ -202,120 +170,107 @@ public class MainActivity extends Activity {
 
         return "\n当前设备：\n" +
                 device + "\n\n" +
-                "iQOO Z9 Turbo / OriginOS 重点：\n" +
-                "如果“震动能恢复、静音恢复不了”，通常不是震动逻辑的问题，" +
-                "而是 OriginOS 的静音可能被做成了：\n" +
-                "1. 勿扰模式\n" +
-                "2. 铃声流静音\n" +
-                "3. 铃声音量 0\n\n" +
-                "所以本版本增加了 iQOO 兼容处理：\n" +
-                "1. 标准静音/震动会切回响铃。\n" +
-                "2. 勿扰式静音需要你允许“勿扰权限”。\n" +
-                "3. 铃声音量为 0 时，会恢复到上次非 0 铃声音量。\n\n" +
-                "OriginOS / vivo / iQOO 建议设置：\n" +
-                "1. 允许本 App 通知权限。\n" +
-                "2. 点“打开勿扰权限设置”，允许本 App 的勿扰权限。\n" +
-                "3. 打开本 App 自启动。\n" +
-                "4. 电池管理里允许后台运行或允许后台高耗电。\n" +
-                "5. 最近任务界面里锁定本 App。\n\n" +
+                "为什么这版省电又不“假死”：\n" +
+                "本版不再常驻前台服务、不再每隔几分钟自检。运营商来电由系统在响铃前" +
+                "主动唤起本应用处理，平时没有任何后台进程，所以既省电、也不存在" +
+                "“服务还在但功能失效”的问题。\n\n" +
+                "运营商来电必响的关键：\n" +
+                "请点“授予来电筛选权限”，把本应用设为来电筛选应用。否则系统不会在来电时唤起本应用。\n\n" +
+                "iQOO / OriginOS 建议设置：\n" +
+                "1. 授予来电筛选权限（最重要）。\n" +
+                "2. 允许勿扰权限（处理勿扰式静音）。\n" +
+                "3. 允许自启动、允许后台运行。\n" +
+                "4. 在最近任务中锁定本 App。\n" +
+                "5. 不要手动“强行停止”本 App。\n\n" +
                 "说明：\n" +
-                "1. 本版不会修改媒体音量、闹钟音量。\n" +
-                "2. 为了修复 iQOO 静音，铃声音量为 0 时会被恢复。\n" +
-                "3. 恢复目标是上次记录到的非 0 铃声音量。\n" +
-                "4. 如果从未记录过非 0 铃声音量，会默认恢复到最大铃声音量的一半。\n" +
-                "5. 如果手机打开了勿扰，并且你没有给勿扰权限，静音可能仍然恢复不了。\n" +
-                "6. 如果手动强行停止 App，系统会阻止它后台恢复，需要重新打开一次。";
+                "1. 微信等网络电话无法精确拦截，只靠每 4 小时兜底“尽量保持有声”，可能偶尔没声音。\n" +
+                "2. 为修复 iQOO 静音，铃声音量为 0 时会恢复到上次记录的非 0 铃声音量。\n" +
+                "3. 不修改媒体音量、闹钟音量。\n" +
+                "4. 如果被“强行停止”或被系统深度睡眠强停，系统将无法在来电时唤起本应用，需重新打开一次。";
     }
 
-    private void startGuardWithPermissionCheck() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                    != PackageManager.PERMISSION_GRANTED) {
-                pendingStartAfterNotificationPermission = true;
-
-                requestPermissions(
-                        new String[]{Manifest.permission.POST_NOTIFICATIONS},
-                        REQ_POST_NOTIFICATIONS
-                );
-
-                return;
-            }
-        }
-
-        startGuardNow();
-    }
-
-    private void startGuardNow() {
-        /*
-         * 开启前先记住当前非 0 铃声音量。
-         */
+    private void startGuard() {
         AudioGuard.rememberCurrentRingVolumeIfNonZero(this);
-
         AudioGuard.setEnabled(this, true);
 
-        Intent intent = new Intent(this, GuardService.class);
+        RingerJobService.schedule(this);
+        AudioGuard.enforce(this);
+
+        updateStatus();
+
+        if (!isCallScreeningRoleHeld()) {
+            Toast.makeText(this, "已开启。请授予“来电筛选”权限，运营商来电才能必响。", Toast.LENGTH_LONG).show();
+            requestCallScreeningRole();
+        } else if (needsNotificationPolicyAccess()) {
+            Toast.makeText(this, "已开启。iQOO 静音建议允许勿扰权限。", Toast.LENGTH_LONG).show();
+            openNotificationPolicyAccessSettings();
+        } else {
+            Toast.makeText(this, "已开启", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void stopGuard() {
+        AudioGuard.setEnabled(this, false);
+        RingerJobService.cancel(this);
+        updateStatus();
+
+        Toast.makeText(this, "已停止（如需彻底关闭，可在系统设置撤销“来电筛选”权限）", Toast.LENGTH_LONG).show();
+    }
+
+    private void requestCallScreeningRole() {
+        RoleManager roleManager = (RoleManager) getSystemService(Context.ROLE_SERVICE);
+
+        if (roleManager == null) {
+            Toast.makeText(this, "本机不支持来电筛选角色", Toast.LENGTH_LONG).show();
+            return;
+        }
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent);
-            } else {
-                startService(intent);
+            if (!roleManager.isRoleAvailable(RoleManager.ROLE_CALL_SCREENING)) {
+                Toast.makeText(this, "本机不支持来电筛选角色", Toast.LENGTH_LONG).show();
+                return;
             }
 
-            AudioGuard.enforce(this);
-            updateStatus();
-
-            if (needsNotificationPolicyAccess()) {
-                Toast.makeText(
-                        this,
-                        "已开启。iQOO 静音建议允许勿扰权限，接下来请在列表里允许本 App。",
-                        Toast.LENGTH_LONG
-                ).show();
-
-                openNotificationPolicyAccessSettings();
-            } else {
-                Toast.makeText(
-                        this,
-                        "已开启 iQOO 兼容守护",
-                        Toast.LENGTH_SHORT
-                ).show();
+            if (roleManager.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)) {
+                Toast.makeText(this, "已持有来电筛选权限", Toast.LENGTH_SHORT).show();
+                updateStatus();
+                return;
             }
+
+            Intent intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING);
+            startActivityForResult(intent, REQ_CALL_SCREENING_ROLE);
         } catch (Exception e) {
-            AudioGuard.setEnabled(this, false);
-            updateStatus();
+            Toast.makeText(this, "无法申请来电筛选权限：" + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
 
-            Toast.makeText(
-                    this,
-                    "启动失败：" + e.getMessage(),
-                    Toast.LENGTH_LONG
-            ).show();
+    private boolean isCallScreeningRoleHeld() {
+        RoleManager roleManager = (RoleManager) getSystemService(Context.ROLE_SERVICE);
+
+        if (roleManager == null) {
+            return false;
+        }
+
+        try {
+            return roleManager.isRoleAvailable(RoleManager.ROLE_CALL_SCREENING)
+                    && roleManager.isRoleHeld(RoleManager.ROLE_CALL_SCREENING);
+        } catch (Exception e) {
+            return false;
         }
     }
 
     @Override
-    public void onRequestPermissionsResult(
-            int requestCode,
-            String[] permissions,
-            int[] grantResults
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
 
-        if (requestCode == REQ_POST_NOTIFICATIONS
-                && pendingStartAfterNotificationPermission) {
-            pendingStartAfterNotificationPermission = false;
-
-            boolean granted = grantResults.length > 0
-                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
-
-            if (!granted) {
-                Toast.makeText(
-                        this,
-                        "通知未允许，OriginOS 后台稳定性可能变差",
-                        Toast.LENGTH_LONG
-                ).show();
+        if (requestCode == REQ_CALL_SCREENING_ROLE) {
+            if (isCallScreeningRoleHeld()) {
+                Toast.makeText(this, "来电筛选权限已授予，运营商来电将自动恢复响铃", Toast.LENGTH_LONG).show();
+            } else {
+                Toast.makeText(this, "未授予来电筛选权限；运营商来电可能无法自动响铃", Toast.LENGTH_LONG).show();
             }
 
-            startGuardNow();
+            updateStatus();
         }
     }
 
@@ -334,34 +289,18 @@ public class MainActivity extends Activity {
         statusView.setText(
                 "\n当前状态：\n" +
                         "守护：" + (AudioGuard.isEnabled(this) ? "已开启" : "未开启") + "\n" +
+                        "来电筛选权限：" + (isCallScreeningRoleHeld() ? "已授予" : "未授予（来电必响需要）") + "\n" +
+                        "兜底任务：" + (RingerJobService.isScheduled(this) ? "已登记（约每 4 小时）" : "未登记") + "\n" +
                         "声音模式：" + AudioGuard.ringerModeToText(mode) + "\n" +
                         "当前铃声音量：" + currentVolume + " / " + maxVolume + "\n" +
                         "铃声流静音：" + (muted ? "是" : "否") + "\n" +
                         "iQOO 零音量恢复目标：" + recoverVolume + "\n" +
-                        "通知权限：" + notificationPermissionText() + "\n" +
                         "勿扰权限：" + notificationPolicyAccessText() + "\n" +
                         "勿扰状态：" + AudioGuard.interruptionFilterToText(interruptionFilter) + "\n"
         );
     }
 
-    private String notificationPermissionText() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            return "无需单独授权";
-        }
-
-        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                == PackageManager.PERMISSION_GRANTED) {
-            return "已允许";
-        }
-
-        return "未允许";
-    }
-
     private String notificationPolicyAccessText() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            return "无需单独授权";
-        }
-
         if (AudioGuard.hasNotificationPolicyAccess(this)) {
             return "已允许";
         }
@@ -370,15 +309,10 @@ public class MainActivity extends Activity {
     }
 
     private boolean needsNotificationPolicyAccess() {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                && !AudioGuard.hasNotificationPolicyAccess(this);
+        return !AudioGuard.hasNotificationPolicyAccess(this);
     }
 
     private boolean isDoNotDisturbActive(int filter) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            return false;
-        }
-
         return filter != NotificationManager.INTERRUPTION_FILTER_ALL
                 && filter != NotificationManager.INTERRUPTION_FILTER_UNKNOWN
                 && filter != -1;
@@ -389,12 +323,7 @@ public class MainActivity extends Activity {
             Intent intent = new Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS);
             startActivity(intent);
         } catch (Exception e) {
-            Toast.makeText(
-                    this,
-                    "无法打开勿扰权限设置，已尝试打开应用设置",
-                    Toast.LENGTH_LONG
-            ).show();
-
+            Toast.makeText(this, "无法打开勿扰权限设置，已尝试打开应用设置", Toast.LENGTH_LONG).show();
             openAppDetails();
         }
     }
