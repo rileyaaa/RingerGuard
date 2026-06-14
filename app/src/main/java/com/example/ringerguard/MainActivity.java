@@ -481,7 +481,7 @@ public class MainActivity extends Activity {
 
         roleButton.setVisibility(enabled && !isCallScreeningRoleHeld() ? View.VISIBLE : View.GONE);
         contactsButton.setVisibility(enabled && !hasContactsPermission() ? View.VISIBLE : View.GONE);
-        dndButton.setVisibility(enabled && !hasNotificationPolicyAccess() ? View.VISIBLE : View.GONE);
+        dndButton.setVisibility(enabled && needsNotificationPolicyAccess() ? View.VISIBLE : View.GONE);
     }
 
     private String notificationPolicyAccessText() {
