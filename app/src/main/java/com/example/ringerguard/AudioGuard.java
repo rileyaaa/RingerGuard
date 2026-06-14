@@ -76,6 +76,16 @@ public final class AudioGuard {
      * 不修改媒体音量、闹钟音量。
      */
     public static boolean enforce(Context context) {
+        return enforce(context, "未知");
+    }
+
+    /**
+     * 带来源标记的 enforce：会把“改前 / 改后”的真实状态写入诊断日志，
+     * 方便在没有电脑的情况下排查“重启后来电不响”。
+     *
+     * @param tag 触发来源，例如“来电”“开机/更新”“兜底任务”“打开界面”“手动修复”。
+     */
+    public static boolean enforce(Context context, String tag) {
         if (context == null) {
             return false;
         }
@@ -84,8 +94,11 @@ public final class AudioGuard {
         AudioManager am = audio(appContext);
 
         if (am == null) {
+            DiagLog.log(appContext, "[" + tag + "] enforce 跳过：AudioManager 为空");
             return false;
         }
+
+        String beforeSnapshot = snapshot(appContext, am);
 
         boolean changed = false;
 
@@ -172,7 +185,41 @@ public final class AudioGuard {
          */
         rememberCurrentRingVolumeIfNonZero(appContext, am);
 
+        String afterSnapshot = snapshot(appContext, am);
+        DiagLog.log(appContext, "[" + tag + "] enforce changed=" + changed
+                + " | 改前: " + beforeSnapshot
+                + " | 改后: " + afterSnapshot);
+
         return changed;
+    }
+
+    /**
+     * 当前音频 / 勿扰状态快照，仅用于诊断日志，记录来电那一刻设备到底是什么状态。
+     */
+    private static String snapshot(Context context, AudioManager am) {
+        int mode = getRingerModeSafe(am);
+        int vol = getStreamVolumeSafe(am, AudioManager.STREAM_RING, -1);
+        int max = getMaxStreamVolumeSafe(am, AudioManager.STREAM_RING, -1);
+        boolean muted = isStreamMutedSafe(am, AudioManager.STREAM_RING);
+
+        int filter = NotificationManager.INTERRUPTION_FILTER_UNKNOWN;
+        boolean perm = false;
+
+        try {
+            NotificationManager nm = notification(context);
+            if (nm != null) {
+                filter = nm.getCurrentInterruptionFilter();
+                perm = nm.isNotificationPolicyAccessGranted();
+            }
+        } catch (Exception ignored) {
+        }
+
+        return "模式=" + ringerModeToText(mode)
+                + " 音量=" + vol + "/" + max
+                + " 流静音=" + (muted ? "是" : "否")
+                + " 勿扰=" + interruptionFilterToText(filter)
+                + " 勿扰权限=" + (perm ? "已允许" : "未允许")
+                + " 守护=" + (isEnabled(context) ? "开" : "关");
     }
 
     public static int getCurrentRingerMode(Context context) {
