@@ -22,6 +22,9 @@ public class BootReceiver extends BroadcastReceiver {
             return;
         }
 
+        DiagLog.log(context, "[开机] 收到广播 " + action
+                + " 守护=" + (AudioGuard.isEnabled(context) ? "开" : "关"));
+
         if (!AudioGuard.isEnabled(context)) {
             return;
         }
@@ -36,7 +39,7 @@ public class BootReceiver extends BroadcastReceiver {
         RingerJobService.schedule(context);
 
         try {
-            AudioGuard.enforce(context);
+            AudioGuard.enforce(context, "开机/更新");
         } catch (Exception ignored) {
         }
     }
