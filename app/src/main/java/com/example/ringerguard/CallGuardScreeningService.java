@@ -24,6 +24,7 @@ public class CallGuardScreeningService extends CallScreeningService {
     @Override
     public void onScreenCall(Call.Details callDetails) {
         if (callDetails == null) {
+            DiagLog.log(this, "[来电] onScreenCall 被系统调用，但 callDetails 为空");
             return;
         }
 
@@ -36,15 +37,42 @@ public class CallGuardScreeningService extends CallScreeningService {
          */
         boolean notOutgoing =
                 callDetails.getCallDirection() != Call.Details.DIRECTION_OUTGOING;
+        boolean enabled = AudioGuard.isEnabled(this);
 
-        if (notOutgoing && AudioGuard.isEnabled(this)) {
+        /*
+         * 关键诊断点：只要系统在来电时把本服务拉起来，这条日志就一定会出现。
+         * 重启后来电不响时，回主界面看日志：
+         *   有这条  -> 服务被拉起了，问题在 enforce / 勿扰权限（根因 B）；
+         *   没这条  -> 系统压根没拉起本服务（根因 A，需要保活）。
+         */
+        DiagLog.log(this, "[来电] onScreenCall 被系统调用 方向="
+                + directionText(callDetails)
+                + " 守护=" + (enabled ? "开" : "关"));
+
+        if (notOutgoing && enabled) {
             try {
-                AudioGuard.enforce(this);
-            } catch (Exception ignored) {
+                AudioGuard.enforce(this, "来电");
+            } catch (Exception e) {
+                DiagLog.log(this, "[来电] enforce 异常：" + e.getMessage());
             }
         }
 
         respondAllow(callDetails);
+    }
+
+    private static String directionText(Call.Details details) {
+        try {
+            int direction = details.getCallDirection();
+            if (direction == Call.Details.DIRECTION_INCOMING) {
+                return "来电";
+            }
+            if (direction == Call.Details.DIRECTION_OUTGOING) {
+                return "去电";
+            }
+            return "未知(" + direction + ")";
+        } catch (Exception e) {
+            return "未知";
+        }
     }
 
     /**
