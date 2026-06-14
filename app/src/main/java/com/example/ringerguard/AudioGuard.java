@@ -4,7 +4,6 @@ import android.app.NotificationManager;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.media.AudioManager;
-import android.os.Build;
 
 public final class AudioGuard {
 
@@ -305,10 +304,6 @@ public final class AudioGuard {
             return false;
         }
 
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            return true;
-        }
-
         try {
             NotificationManager nm = notification(context);
 
@@ -325,10 +320,6 @@ public final class AudioGuard {
     public static int getCurrentInterruptionFilter(Context context) {
         if (context == null) {
             return NotificationManager.INTERRUPTION_FILTER_UNKNOWN;
-        }
-
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            return NotificationManager.INTERRUPTION_FILTER_ALL;
         }
 
         try {
@@ -374,10 +365,6 @@ public final class AudioGuard {
 
     private static boolean exitDoNotDisturbIfAllowed(Context context) {
         if (context == null) {
-            return false;
-        }
-
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
             return false;
         }
 
@@ -495,10 +482,6 @@ public final class AudioGuard {
             return false;
         }
 
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            return false;
-        }
-
         boolean muted = false;
 
         try {
@@ -524,10 +507,6 @@ public final class AudioGuard {
 
     private static boolean isStreamMutedSafe(AudioManager am, int stream) {
         if (am == null) {
-            return false;
-        }
-
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
             return false;
         }
 
