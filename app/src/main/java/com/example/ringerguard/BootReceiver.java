@@ -3,7 +3,6 @@ package com.example.ringerguard;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.os.Build;
 
 public class BootReceiver extends BroadcastReceiver {
 
@@ -27,14 +26,17 @@ public class BootReceiver extends BroadcastReceiver {
             return;
         }
 
-        Intent serviceIntent = new Intent(context, GuardService.class);
+        /*
+         * 开机 / 更新后：
+         * 1. 重新登记低频兜底任务（持久化任务一般会自动恢复，这里再确保一次）；
+         * 2. 顺手恢复一次响铃状态。
+         *
+         * 运营商来电的“必响”由系统来电筛选机制负责，不需要在这里启动任何常驻服务。
+         */
+        RingerJobService.schedule(context);
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(serviceIntent);
-            } else {
-                context.startService(serviceIntent);
-            }
+            AudioGuard.enforce(context);
         } catch (Exception ignored) {
         }
     }
